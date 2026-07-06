@@ -1,0 +1,6 @@
+# Config locale de Claude Code (spécifique à cette machine, pas utile au déploiement)
+.claude/
+
+# Documents de travail de la session de build (brief + prototype de référence), pas utiles une fois l'app livrée
+PROMPT_CLAUDE_CODE_MOVIEMATCH.md
+moviematch.jsx

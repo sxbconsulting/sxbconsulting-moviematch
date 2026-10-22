@@ -1,33 +1,37 @@
-// Carte film/série — affiche TMDB si dispo (étape 2), sinon dégradé par genre.
+// Carte film/série — affiche TMDB si dispo, sinon dégradé par genre (maquette Claude Design).
 import { el } from "../lib/dom.js";
-import { genreStyleOf } from "../data/genre-style.js";
+import { posterBg } from "../data/genre-style.js";
+import { icon } from "./icons.js";
+import { titleSize, titleFont, metaLine } from "../lib/utils.js";
 
-export function MovieCard(m, { compact = false, badge = null, badgeColor = null, extraStyle = {} } = {}) {
-  const gs = genreStyleOf(m.genre);
-  const style = {
-    // Le dégradé du genre reste en dernière couche : il s'affiche immédiatement pendant
-    // le chargement de l'affiche (évite tout effet de transparence/superposition avec la carte suivante).
-    background: m.poster
-      ? `linear-gradient(to bottom, #00000010 35%, #000000dd 100%), url(${m.poster}) center/cover, ${gs.grad}`
-      : gs.grad,
-    ...extraStyle,
-  };
+const STAMPS = { hot: ["CHAUD", "hot"], pass: ["PASSE", "pass"], seen: ["DÉJÀ VU", "seen"] };
 
-  const badges = [el("span", { class: "mm-card-badge", style: { color: gs.chip } }, [m.genre])];
-  if (m.dur) badges.push(el("span", { class: "mm-card-badge" }, [m.dur]));
-  if (m.media_type === "tv") badges.push(el("span", { class: "mm-card-badge" }, ["📺 Série"]));
+export function MovieCard(m, { compact = false, stamp = null, stampOpacity = 0.95, selected = false, bare = false } = {}) {
+  const card = el("div", {
+    class: "mm-card" + (compact ? " compact" : "") + (selected ? " selected" : ""),
+    style: { background: posterBg(m) },
+  });
+  card.appendChild(el("div", { class: "mm-card-ring a", "aria-hidden": "true" }));
+  card.appendChild(el("div", { class: "mm-card-ring b", "aria-hidden": "true" }));
+  card.appendChild(el("div", { class: "mm-card-shade" }));
 
-  const children = [el("div", { class: "mm-card-badges" }, badges)];
+  const pills = [el("span", { class: "mm-pill" }, [m.genre || "Perso"])];
+  if (m.media_type === "tv") pills.push(el("span", { class: "mm-pill" }, [icon("tv", 13), "Série"]));
+  (m.on || []).slice(0, 2).forEach((p) => pills.push(el("span", { class: "mm-pill gold" }, [p])));
+  card.appendChild(el("div", { class: "mm-card-pills" }, pills));
 
-  if (badge) {
-    children.push(
-      el("div", { class: "mm-card-flag", style: { borderColor: badgeColor, color: badgeColor } }, [badge])
-    );
+  if (selected) card.appendChild(el("span", { class: "mm-card-check" }, [icon("check", 20, { stroke: 3 })]));
+
+  const st = STAMPS[stamp];
+  if (st) card.appendChild(el("div", { class: "mm-stamp " + st[1], style: { opacity: String(stampOpacity) } }, [st[0]]));
+
+  if (!bare) {
+    const title = String(m.title || "").toUpperCase();
+    card.appendChild(el("div", { class: "mm-card-info" }, [
+      el("h2", { class: "mm-card-title", style: { fontSize: titleFont(title, compact ? 38 : 50) } }, [title]),
+      metaLine(m) ? el("div", { class: "mm-card-meta" }, [metaLine(m)]) : null,
+      !compact && m.pitch ? el("p", { class: "mm-card-pitch" }, [m.pitch]) : null,
+    ]));
   }
-
-  children.push(el("div", { class: "mm-card-title" }, [m.title]));
-  if (m.year) children.push(el("div", { class: "mm-card-year" }, [String(m.year)]));
-  if (m.pitch && !compact) children.push(el("p", { class: "mm-card-pitch" }, [m.pitch]));
-
-  return el("div", { class: "mm-card" + (compact ? " compact" : ""), style }, children);
+  return card;
 }

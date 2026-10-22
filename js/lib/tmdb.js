@@ -176,15 +176,15 @@ export async function discoverByGenres(genreKeys, mediaMode) {
   const calls = [];
   const mediaTypes = [];
   if ((mediaMode === "movie" || mediaMode === "both") && movieIds.length) {
-    calls.push(getJSON("/discover/movie", { with_genres: movieIds.join(","), sort_by: "popularity.desc", page: 1 }));
+    calls.push(getJSON("/discover/movie", { with_genres: movieIds.join("|"), sort_by: "popularity.desc", page: 1 }));
     mediaTypes.push("movie");
-    calls.push(getJSON("/discover/movie", { with_genres: movieIds.join(","), sort_by: "popularity.desc", page: 2 }));
+    calls.push(getJSON("/discover/movie", { with_genres: movieIds.join("|"), sort_by: "popularity.desc", page: 2 }));
     mediaTypes.push("movie");
   }
   if ((mediaMode === "tv" || mediaMode === "both") && tvIds.length) {
-    calls.push(getJSON("/discover/tv", { with_genres: tvIds.join(","), sort_by: "popularity.desc", page: 1 }));
+    calls.push(getJSON("/discover/tv", { with_genres: tvIds.join("|"), sort_by: "popularity.desc", page: 1 }));
     mediaTypes.push("tv");
-    calls.push(getJSON("/discover/tv", { with_genres: tvIds.join(","), sort_by: "popularity.desc", page: 2 }));
+    calls.push(getJSON("/discover/tv", { with_genres: tvIds.join("|"), sort_by: "popularity.desc", page: 2 }));
     mediaTypes.push("tv");
   }
   const settled = await Promise.allSettled(calls);
@@ -212,13 +212,13 @@ export async function browseCatalog({ genreKeys = [], decades = [], mediaMode = 
   const calls = [], mediaTypes = [];
   if (mediaMode === "movie" || mediaMode === "both") {
     const params = { sort_by: "popularity.desc", page: 1 };
-    if (movieIds.length) params.with_genres = movieIds.join(",");
+    if (movieIds.length) params.with_genres = movieIds.join("|");
     if (gte) { params["primary_release_date.gte"] = gte; params["primary_release_date.lte"] = lte; }
     calls.push(getJSON("/discover/movie", params)); mediaTypes.push("movie");
   }
   if (mediaMode === "tv" || mediaMode === "both") {
     const params = { sort_by: "popularity.desc", page: 1 };
-    if (tvIds.length) params.with_genres = tvIds.join(",");
+    if (tvIds.length) params.with_genres = tvIds.join("|");
     if (gte) { params["first_air_date.gte"] = gte; params["first_air_date.lte"] = lte; }
     calls.push(getJSON("/discover/tv", params)); mediaTypes.push("tv");
   }
@@ -283,6 +283,80 @@ export async function searchPersonCredits(name) {
   return { personName: person.name, items: dedupe(items) };
 }
 
+// ————— Plateformes de streaming (France, inclus dans l'abonnement) —————
+// Les ids TMDB des plateformes sont retrouvés par leur nom (liste officielle, cache 24h),
+// pour ne pas dépendre d'ids codés en dur qui peuvent changer.
+export const PLATFORMS = [
+  { label: "Netflix", re: /^netflix$/i },
+  { label: "Prime Video", re: /^amazon prime video$/i },
+  { label: "Disney+", re: /^disney plus$/i },
+  { label: "Canal+", re: /^canal\+$/i },
+  { label: "Max", re: /^(hbo )?max$/i },
+  { label: "Apple TV+", re: /^apple tv(\+| plus)$/i },
+  { label: "Paramount+", re: /^paramount(\+| plus)$/i },
+];
+const labelOfProvider = (name) => (PLATFORMS.find((p) => p.re.test(String(name || "").trim())) || {}).label || null;
+
+async function loadProviderIds() {
+  const cached = readCache("mm:tmdb:providers", 24 * 3600 * 1000);
+  if (cached) return cached;
+  const [mv, tv] = await Promise.all([
+    getJSON("/watch/providers/movie", { watch_region: "FR" }),
+    getJSON("/watch/providers/tv", { watch_region: "FR" }),
+  ]);
+  const map = {}; // label → [ids]
+  for (const p of [...(mv.results || []), ...(tv.results || [])]) {
+    const label = labelOfProvider(p.provider_name);
+    if (!label) continue;
+    map[label] = [...new Set([...(map[label] || []), p.provider_id])];
+  }
+  writeCache("mm:tmdb:providers", map);
+  return map;
+}
+
+// Tirage filtré par plateformes (+ genres optionnels), respecte le toggle Films/Séries.
+export async function discoverOnPlatforms(labels, { genreKeys = [], mediaMode = "both" } = {}) {
+  const [genres, providers, chips] = await Promise.all([loadGenreCache(), loadProviderIds(), getGenreChips()]);
+  const ids = [...new Set(labels.flatMap((l) => providers[l] || []))];
+  if (!ids.length) return [];
+  const base = { watch_region: "FR", with_watch_providers: ids.join("|"), with_watch_monetization_types: "flatrate", sort_by: "popularity.desc", "vote_count.gte": 200 };
+  const calls = [], mediaTypes = [];
+  for (const mt of ["movie", "tv"]) {
+    if (mediaMode !== "both" && mediaMode !== mt) continue;
+    const params = { ...base };
+    if (genreKeys.length) {
+      const gids = [...new Set(genreKeys.flatMap((k) => chips[k]?.[mt] || []))];
+      if (!gids.length) continue;
+      params.with_genres = gids.join("|");
+    }
+    for (const page of [1, 2, 3]) { calls.push(getJSON(`/discover/${mt}`, { ...params, page })); mediaTypes.push(mt); }
+  }
+  const settled = await Promise.allSettled(calls);
+  let items = [];
+  settled.forEach((r, i) => {
+    if (r.status === "fulfilled") items.push(...(r.value.results || []).map((raw) => normalize(raw, mediaTypes[i], genres)));
+  });
+  return dedupe(items).filter((m) => !m.year || (m.year >= YEAR_MIN && m.year <= YEAR_MAX));
+}
+
+// Plateformes (parmi celles suivies) où un titre est inclus dans l'abonnement en France.
+export async function getWatchProviders(m) {
+  if (!m || !m.tmdb_id) return [];
+  const key = `mm:tmdb:wp:${m.media_type}-${m.tmdb_id}`;
+  const cached = readCache(key, 3 * 24 * 3600 * 1000);
+  if (cached) return cached;
+  const data = await getJSON(`/${m.media_type === "tv" ? "tv" : "movie"}/${m.tmdb_id}/watch/providers`);
+  const labels = [...new Set(((data.results || {}).FR?.flatrate || []).map((p) => labelOfProvider(p.provider_name)).filter(Boolean))];
+  writeCache(key, labels);
+  return labels;
+}
+
+// Ajoute `on: [plateformes]` à chaque titre d'un deck (en parallèle, sans bloquer si une requête échoue).
+export async function tagPlatforms(items) {
+  const res = await Promise.allSettled(items.map((m) => getWatchProviders(m)));
+  return items.map((m, i) => (res[i].status === "fulfilled" && res[i].value.length ? { ...m, on: res[i].value } : m));
+}
+
 // ————— Fiche détaillée (film ou série) + casting —————
 function formatDuration(minutes) {
   if (!minutes) return "";
@@ -290,12 +364,13 @@ function formatDuration(minutes) {
 }
 
 export async function getDetails(mediaType, tmdbId) {
-  const cacheKey = `mm:tmdb:details:${mediaType}-${tmdbId}`;
-  const cached = readCache(cacheKey, 7 * 24 * 3600 * 1000);
+  const cacheKey = `mm:tmdb:details2:${mediaType}-${tmdbId}`;
+  const cached = readCache(cacheKey, 3 * 24 * 3600 * 1000);
   if (cached) return cached;
 
   const path = mediaType === "tv" ? `/tv/${tmdbId}` : `/movie/${tmdbId}`;
-  const data = await getJSON(path, { append_to_response: "credits" });
+  const data = await getJSON(path, { append_to_response: "credits,watch/providers" });
+  const flatrate = ((data["watch/providers"] || {}).results || {}).FR?.flatrate || [];
 
   const director = mediaType === "tv"
     ? (data.created_by || []).map((c) => c.name).join(", ")
@@ -314,6 +389,7 @@ export async function getDetails(mediaType, tmdbId) {
     duree,
     poster: posterUrl(data.poster_path),
     isTv: mediaType === "tv",
+    plateformes: [...new Set(flatrate.map((p) => labelOfProvider(p.provider_name)).filter(Boolean))],
   };
   writeCache(cacheKey, details);
   return details;

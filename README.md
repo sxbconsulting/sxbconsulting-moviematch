@@ -56,12 +56,32 @@ quelqu'un qui reprendrait le projet.
 ## Tester à deux téléphones
 
 1. Ouvre l'app sur ton téléphone, mets ton prénom, crée une salle (un des 4 modes).
-2. Note le code à 4 lettres affiché sur le ticket jaune.
-3. Sur un deuxième téléphone (ou l'ordinateur d'un pote), ouvre la même URL, mets un autre prénom,
-   entre le code pour rejoindre.
+2. La feuille « Inviter la bande » s'ouvre : scanne le QR code avec le deuxième téléphone (ou envoie le
+   lien par WhatsApp). Sinon, note le code à 5 lettres du ticket jaune et tape-le sur l'autre téléphone.
+3. Sur le deuxième téléphone, mets un autre prénom et rejoins.
 4. Swipez chacun de votre côté : l'écran "Résultats" du premier téléphone doit se mettre à jour
    **tout seul**, sans recharger la page, dès que le deuxième vote.
-5. Si un film est liké par tout le monde, il remonte en haut avec une étiquette de match (✨).
+5. Si un film est liké par tout le monde, il remonte en haut avec une étiquette MATCH. Quand tout le monde
+   a fini, un bouton « Lancer le VS » (ou « C'est réglé » s'il n'y a qu'un match) apparaît en haut.
+
+## Nouveautés v3.1
+
+- **Nouveau design** (maquette Claude Design) : fond nuit + halo violet, ticket jaune, loader pellicule,
+  icônes à trait fin, tampons CHAUD / PASSE / DÉJÀ VU, écran champion doré.
+- **Inviter par QR code / lien** : `…/?salle=CODE` pré-remplit le code (et rejoint direct si le prénom est connu).
+- **Filtre plateformes** (Netflix, Prime Video, Disney+, Canal+, Max, Apple TV+, Paramount+) via TMDB
+  `watch/providers` région FR (abonnement uniquement). Plateformes affichées sur les cartes et dans la fiche.
+- **Mémorisés sur l'appareil** (`localStorage` `mm:prefs`) : prénom, son on/off, plateformes, dernière salle
+  (bouton « Reprendre ma salle » tant qu'elle n'a pas expiré).
+- **Déjà vu** : bouton œil au swipe, dans la fiche et la décision éclair ; exclu des prochains tirages (`mm:seen`).
+- **VS direct**, **son & vibrations** (coupables depuis l'accueil), **égalité tirée au sort** dans les duels.
+- **Salles sécurisées** : codes 5 lettres uniques, expiration 7 jours, blocage 30 s après 5 codes faux,
+  prénom déjà pris refusé (colonne `device`).
+- Correctifs : double vote sur double-tap, focus perdu en tapant dans les recherches, filtre de genres TMDB
+  (OU au lieu de ET), liste des joueurs vidée en cas de coupure réseau.
+
+⚠️ **À faire une fois dans Supabase** : recoller `supabase_setup.sql` dans le SQL Editor (ajoute les colonnes
+`seen` et `device`). Sans ça l'app marche, mais « Déjà vu : Tom » et le contrôle des prénoms en doublon restent inactifs.
 
 ## Résilience — ce qui a été prévu
 

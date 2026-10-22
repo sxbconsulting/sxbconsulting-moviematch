@@ -1,98 +1,133 @@
-// Résultats live — trie les matchs (100% des joueurs ont liké) en premier.
+// Résultats live — maquette "05 Résultats". Matchs (100 % des joueurs ont liké) en premier.
+// VS direct : quand tout le monde a fini, un seul bouton pour départager (ou valider le match unique).
 import { el } from "../lib/dom.js";
-import { state, setState } from "../state.js";
+import { state, setState, notify } from "../state.js";
 import { Ticket } from "../components/ticket.js";
-import { FilmLoader } from "../components/film-loader.js";
-import { genreStyleOf } from "../data/genre-style.js";
+import { TopBar, Poster, Empty } from "../components/ui.js";
+import { icon } from "../components/icons.js";
+import { goHome } from "../actions.js";
+import { setWinner as saveWinner } from "../lib/backend.js";
+import { shareText, titleSize, titleFont } from "../lib/utils.js";
+import { fx } from "../lib/fx.js";
+
+let prevMatches = { code: null, n: 0 };
+
+async function crown(m) {
+  fx.win();
+  setState({ winner: m });
+  if (!state.local && state.code) await saveWinner(state.code, m);
+}
 
 export function renderResults(container) {
-  const { deck, players, code, winner } = state;
+  const { deck, players, code, winner, local } = state;
+  const total = players.length;
   const nDone = players.filter((p) => p.done).length;
+  const allDone = total >= 2 && nDone === total;
 
   const rows = deck.map((m) => {
     const voters = players.filter((p) => m.id in (p.votes || {}));
     const likes = voters.filter((p) => p.votes[m.id]);
-    const isMatch = players.length >= 2 && voters.length === players.length && likes.length === players.length;
-    return { m, likes, isMatch };
-  }).filter((r) => r.likes.length > 0)
+    const seenBy = players.filter((p) => Array.isArray(p.seen) && p.seen.includes(m.id));
+    const isMatch = total >= 2 && voters.length === total && likes.length === total;
+    return { m, likes, seenBy, isMatch };
+  }).filter((r) => r.likes.length || r.seenBy.length)
     .sort((a, b) => (b.isMatch - a.isMatch) || (b.likes.length - a.likes.length));
-
+  const liked = rows.filter((r) => r.likes.length);
   const matches = rows.filter((r) => r.isMatch);
+  const vsPool = (matches.length >= 2 ? matches : liked).slice(0, 8).map((r) => r.m);
+  const goVS = () => setState({ vsPool, winner: null, vsBack: "results", screen: "versus" });
 
-  const wrap = el("div", { style: { marginTop: "8px" } });
-  wrap.appendChild(Ticket(code));
+  // Son + vibration quand un nouveau match tombe
+  if (prevMatches.code === code && matches.length > prevMatches.n) fx.match();
+  prevMatches = { code, n: matches.length };
 
-  wrap.appendChild(el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", margin: "20px 0 12px" } }, [
-    el("div", { class: "mm-title", style: { margin: 0 } }, ["RÉSULTATS ", el("span", { class: "mm-dim", style: { fontSize: "14px", fontFamily: "var(--font-body)" } }, ["· live"])]),
-    el("span", { class: "mm-dim", style: { fontSize: "12px" } }, [`${nDone}/${players.length} ont fini`]),
-  ]));
+  const wrap = el("div", { class: "mm-screen" });
+  wrap.appendChild(TopBar({
+    onBack: () => goHome(), backLabel: "Accueil",
+    right: local ? el("span", { class: "mm-note strong" }, ["Hors-ligne"]) : el("span", { class: "mm-live" }, [el("span", { class: "dot" }), "En direct"]),
+  }));
+  if (!local) wrap.appendChild(Ticket(code));
 
-  if (players.length < 2) {
-    wrap.appendChild(el("div", { class: "mm-panel" }, [
-      FilmLoader({ inline: true, text: "" }),
-      el("p", { class: "mm-dim", style: { fontSize: "14px", margin: "10px 0 0" } }, [
-        "En attente des potes… Partage le code ", el("b", { style: { color: "var(--marquee)" } }, [code]), " — ça se met à jour tout seul.",
-      ]),
-    ]));
-  }
+  // Qui a fini
+  const stillSwiping = players.filter((p) => !p.done);
+  const chips = el("div", { class: "mm-chips" });
+  players.forEach((p) => chips.appendChild(el("span", { class: "mm-player" + (p.done ? " done" : "") }, [
+    p.name, el("small", {}, [p.done ? "fini" : `${Object.keys(p.votes || {}).length}/${deck.length}`]),
+  ])));
+  const pcard = el("div", { class: "mm-panel" }, [
+    el("div", { class: "mm-row-between" }, [
+      el("span", { class: "mm-bebas26" }, [el("span", { class: "gold" }, [`${nDone}/${total}`]), " ONT FINI"]),
+      stillSwiping[0] && total > 1 ? el("span", { class: "mm-note" }, [`${stillSwiping[0].name} en est à ${Object.keys(stillSwiping[0].votes || {}).length} / ${deck.length}`]) : null,
+    ]),
+    chips,
+  ]);
+  if (total < 2 && !local) pcard.appendChild(el("button", { type: "button", class: "mm-btn dashed", onClick: () => setState({ invite: true }) }, [icon("qr", 18), "En attente des potes — montre-leur le QR code"]));
+  wrap.appendChild(pcard);
 
   if (winner) {
-    wrap.appendChild(el("div", {
-      style: { display: "flex", alignItems: "center", gap: "12px", padding: "12px 14px", margin: "14px 0 4px", borderRadius: "14px", background: "#ffc53d1a", border: "1px solid #ffc53d66" },
-    }, [
-      el("span", { style: { fontSize: "24px" } }, ["🏆"]),
-      el("div", {}, [
-        el("div", { style: { fontSize: "11px", color: "var(--marquee)", letterSpacing: "1px", fontWeight: "700" } }, ["FILM DE LA SOIRÉE"]),
-        el("div", { style: { fontFamily: "var(--font-display)", fontSize: "24px", letterSpacing: "1px" } }, [winner.title]),
+    wrap.appendChild(el("div", { class: "mm-winner" }, [
+      Poster(winner, { w: 52, h: 78, r: 10 }),
+      el("div", { class: "mm-winner-txt" }, [
+        el("span", { class: "mm-kicker gold" }, [icon("trophy", 14), "FILM DE LA SOIRÉE"]),
+        el("span", { class: "mm-winner-title" }, [String(winner.title).toUpperCase()]),
       ]),
     ]));
   }
 
-  if (matches.length > 0) {
-    wrap.appendChild(el("div", { style: { marginBottom: "8px", fontSize: "13px", color: "var(--match)" } }, [
-      `🎉 ${matches.length} match${matches.length > 1 ? "s" : ""} — tout le monde est chaud !`,
+  // VS direct
+  if (!winner && allDone && matches.length === 1) {
+    const t = String(matches[0].m.title).toUpperCase();
+    wrap.appendChild(el("div", { class: "mm-cta green" }, [
+      el("span", { class: "mm-kicker green" }, ["MATCH PARFAIT · TOUT LE MONDE EST CHAUD"]),
+      el("span", { class: "mm-cta-title", style: { fontSize: titleFont(t, 36) } }, [t]),
+      el("button", { type: "button", class: "mm-btn green", onClick: () => crown(matches[0].m) }, [icon("check", 20, { stroke: 2.6 }), "C'est réglé, on lance"]),
+    ]));
+  } else if (!winner && allDone && vsPool.length >= 2) {
+    wrap.appendChild(el("div", { class: "mm-cta" }, [
+      el("span", { class: "mm-kicker gold" }, ["TOUT LE MONDE A FINI"]),
+      el("span", { class: "mm-cta-txt" }, [matches.length >= 2 ? `${matches.length} matchs à égalité. On tranche en duel ?` : `Aucun match parfait — les ${vsPool.length} plus likés s'affrontent.`]),
+      el("button", { type: "button", class: "mm-btn gold", onClick: goVS }, ["Lancer le VS ", el("span", { class: "mm-btn-bebas" }, [`· ${vsPool.length} TITRES`])]),
     ]));
   }
 
-  rows.forEach(({ m, likes, isMatch }) => {
-    const gs = genreStyleOf(m.genre);
-    wrap.appendChild(el("div", {
-      class: "mm-result-row" + (isMatch ? " match" : ""),
-      onClick: () => setState({ ficheFor: m }),
-    }, [
-      el("div", { class: "mm-result-thumb", style: { background: m.poster ? `url(${m.poster}) center/cover` : gs.grad } }),
-      el("div", { style: { flex: "1", minWidth: "0" } }, [
-        el("div", { style: { fontWeight: "700", fontSize: "15px" } }, [m.title + (isMatch ? " ✨" : "")]),
-        el("div", { style: { fontSize: "12px", color: "var(--dim)" } }, [likes.map((p) => p.name).join(", ")]),
+  wrap.appendChild(el("div", { class: "mm-row-between" }, [
+    el("h2", { class: "mm-h2 sm" }, ["CLASSEMENT"]),
+    matches.length ? el("span", { class: "mm-note strong green" }, [`${matches.length} match${matches.length > 1 ? "s" : ""}`]) : null,
+  ]));
+
+  const list = el("div", { class: "mm-stack tight" });
+  rows.forEach(({ m, likes, seenBy, isMatch }) => {
+    list.appendChild(el("button", { type: "button", class: "mm-result" + (isMatch ? " match" : ""), onClick: () => setState({ ficheFor: m, ficheFromSwipe: false }) }, [
+      Poster(m),
+      el("span", { class: "mm-result-txt" }, [
+        el("span", { class: "mm-result-line" }, [el("span", { class: "mm-result-title" }, [m.title]), isMatch ? el("span", { class: "mm-match-pill" }, ["MATCH"]) : null]),
+        likes.length ? el("span", { class: "mm-result-who" }, [likes.map((p) => p.name).join(", ")]) : null,
+        seenBy.length ? el("span", { class: "mm-result-who" }, [icon("eye", 13), `Déjà vu : ${seenBy.map((p) => p.name).join(", ")}`]) : null,
       ]),
-      el("div", { class: "mm-result-score", style: { color: isMatch ? "var(--match)" : "var(--text)" } }, [
-        String(likes.length), el("span", { class: "mm-dim", style: { fontSize: "14px" } }, [`/${players.length}`]),
-      ]),
+      el("span", { class: "mm-result-score" + (isMatch ? " green" : likes.length < 2 ? " dim" : "") }, [`${likes.length}/${total}`]),
     ]));
   });
+  if (!rows.length) list.appendChild(Empty("Personne n'a encore liké. Ça swipe…"));
+  wrap.appendChild(list);
 
-  if (rows.length === 0 && players.length >= 2) {
-    wrap.appendChild(el("p", { class: "mm-dim", style: { fontSize: "14px" } }, ["Personne n'a encore liké de film. Ça swipe ! 👆"]));
+  const bottom = el("div", { class: "mm-stack" });
+  if (!allDone && vsPool.length >= 2) {
+    bottom.appendChild(el("button", { type: "button", class: "mm-btn gold", onClick: goVS }, [
+      "Départager en VS ", el("span", { class: "mm-btn-bebas" }, [`· ${matches.length >= 2 ? `${matches.length} MATCHS` : `${vsPool.length} TITRES`}`]),
+    ]));
   }
-
-  if (rows.length >= 2) {
-    const pool = (matches.length >= 2 ? matches : rows).slice(0, 8).map((r) => r.m);
-    wrap.appendChild(el("button", {
-      class: "mm-btn mm-btn-primary outline", style: { marginTop: "14px" },
-      onClick: () => setState({ vsPool: pool, winner: null, vsBack: "results", screen: "versus" }),
-    }, [`⚔️ Départager en VS (${Math.min((matches.length >= 2 ? matches : rows).length, 8)} films)`]));
-  }
-
-  const hasUnvoted = deck.some((m) => !(m.id in state.votes));
-  if (hasUnvoted) {
-    wrap.appendChild(el("button", {
-      class: "mm-btn mm-btn-primary", style: { marginTop: "16px" },
-      onClick: () => {
-        const first = deck.findIndex((m) => !(m.id in state.votes));
-        if (first !== -1) setState({ idx: first, screen: "swipe" });
-      },
+  if (deck.some((m) => !(m.id in state.votes))) {
+    bottom.appendChild(el("button", {
+      type: "button", class: "mm-btn dark",
+      onClick: () => { const first = deck.findIndex((m) => !(m.id in state.votes)); if (first !== -1) setState({ idx: first, screen: "swipe" }); },
     }, ["Continuer à swiper"]));
   }
-
+  if (winner) {
+    bottom.appendChild(el("button", {
+      type: "button", class: "mm-btn dark",
+      onClick: async () => { if ((await shareText(`Ce soir on regarde ${winner.title} — tranché sur MovieMatch 🎬`)) === "copied") notify("Résultat copié"); },
+    }, [icon("share", 18), "Partager le résultat"]));
+  }
+  wrap.appendChild(bottom);
   container.appendChild(wrap);
 }

@@ -6,7 +6,7 @@
 
 -- ————— Salles de swipe —————
 create table if not exists mm_sessions (
-  code text primary key,            -- 4 lettres (sans I, L, O)
+  code text primary key,            -- 5 lettres (sans I, L, O) ; anciennes salles : 4 lettres
   movies jsonb not null,             -- deck figé à la création [{id,title,year,genre,dur,pitch,poster,tmdb_id,media_type}]
   winner jsonb,                      -- film gagnant du VS (null tant que pas de VS)
   created_at timestamptz default now()
@@ -23,9 +23,9 @@ begin
   end if;
 end $$;
 
--- TODO (nettoyage) : les salles ne sont jamais supprimées automatiquement.
--- Idée pour plus tard : un cron (pg_cron ou GitHub Action) qui supprime les lignes
--- de mm_sessions où created_at < now() - interval '7 days'.
+-- Les salles expirent au bout de 7 jours côté app (on ne peut plus les rejoindre).
+-- Nettoyage optionnel des vieilles lignes (à lancer à la main de temps en temps) :
+-- delete from mm_sessions where created_at < now() - interval '7 days';
 
 -- ————— Joueurs d'une salle —————
 create table if not exists mm_players (
@@ -37,9 +37,15 @@ create table if not exists mm_players (
   primary key (session_code, name)
 );
 
+-- v3.1 : "déjà vu" (ids des titres marqués vus par ce joueur) + identifiant d'appareil
+-- (empêche deux personnes d'utiliser le même prénom dans une salle et d'écraser leurs votes).
+-- L'app fonctionne sans ces colonnes (elle les ignore), mais ces deux fonctions ont besoin d'elles.
+alter table mm_players add column if not exists seen jsonb default '[]'::jsonb;
+alter table mm_players add column if not exists device text;
+
 -- ————— Listes partagées par code —————
 create table if not exists mm_shared_lists (
-  code text primary key,             -- 4 lettres
+  code text primary key,             -- 5 lettres (anciennes listes : 4)
   name text not null,
   movies jsonb not null,
   created_at timestamptz default now()
@@ -55,7 +61,7 @@ begin
   end if;
 end $$;
 
--- ————— RLS : app sans compte, le code à 4 lettres fait office de secret faible —————
+-- ————— RLS : app sans compte, le code à 5 lettres (+ expiration 7 jours) fait office de secret —————
 alter table mm_sessions enable row level security;
 alter table mm_players enable row level security;
 alter table mm_shared_lists enable row level security;

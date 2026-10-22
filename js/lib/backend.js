@@ -1,9 +1,7 @@
 // ============================================================
-// BACKEND — Supabase (tables mm_sessions / mm_players / mm_shared_lists, déjà créées).
-// Même interface qu'à l'étape 1 (localStorage) : les écrans n'ont pas eu à changer.
-// Chaque appel réseau a un timeout de 4s (voir PROMPT_CLAUDE_CODE_MOVIEMATCH.md §9) ;
-// en cas d'échec on renvoie null/false plutôt que de laisser l'UI bloquée
-// (le mode hors-ligne complet sera peaufiné à l'étape 6).
+// BACKEND — Supabase (tables mm_sessions / mm_players / mm_shared_lists).
+// Chaque appel réseau a un timeout de 4s ; en cas d'échec on renvoie null/false
+// plutôt que de laisser l'UI bloquée.
 // ============================================================
 import { supabase } from "./supabase-client.js";
 import { withTimeout } from "./utils.js";
@@ -18,9 +16,11 @@ async function run(promise) {
   }
 }
 
+// Création : renvoie "ok", "taken" (code déjà utilisé) ou "error" (Supabase injoignable).
 export async function createSession(code, movies) {
   const { error } = await run(supabase.from("mm_sessions").insert({ code, movies }));
-  return !error;
+  if (!error) return "ok";
+  return error.code === "23505" ? "taken" : "error";
 }
 
 export async function getSession(code) {
@@ -38,11 +38,21 @@ export async function getWinner(code) {
   return data?.winner || null;
 }
 
+// Colonnes ajoutées en v3.1 (seen = "déjà vu", device = identifiant d'appareil).
+// Si le SQL de mise à jour n'a pas encore été lancé, on réessaie sans elles : l'app continue de marcher.
+let extraColumns = true;
+const EXTRA = ["seen", "device"];
+
 export async function upsertPlayer(code, name, patch) {
   const row = { session_code: code, name, updated_at: new Date().toISOString(), ...patch };
-  const { data } = await run(
-    supabase.from("mm_players").upsert(row, { onConflict: "session_code,name" }).select().maybeSingle()
-  );
+  const send = (r) => run(supabase.from("mm_players").upsert(r, { onConflict: "session_code,name" }).select().maybeSingle());
+  if (!extraColumns) EXTRA.forEach((k) => delete row[k]);
+  let { data, error } = await send(row);
+  if (error && extraColumns && EXTRA.some((k) => k in row) && /column|schema/i.test(String(error.message || error.code || ""))) {
+    extraColumns = false;
+    EXTRA.forEach((k) => delete row[k]);
+    ({ data } = await send(row));
+  }
   return data || row;
 }
 
@@ -53,9 +63,10 @@ export async function getPlayer(code, name) {
   return data || null;
 }
 
+// null = échec réseau (l'appelant garde l'ancienne liste plutôt que de la vider)
 export async function listPlayers(code) {
-  const { data } = await run(supabase.from("mm_players").select("*").eq("session_code", code));
-  return data || [];
+  const { data, error } = await run(supabase.from("mm_players").select("*").eq("session_code", code));
+  return error ? null : data || [];
 }
 
 export async function shareList(code, name, movies) {
@@ -69,8 +80,6 @@ export async function getSharedList(code) {
 }
 
 // ————— Realtime : pousse les changements de mm_players / mm_sessions pour une salle —————
-// Retourne une fonction de désabonnement. onStatus("SUBSCRIBED"|"CHANNEL_ERROR"|"TIMED_OUT"|...)
-// permet à l'appelant de basculer sur le polling de secours si la connexion échoue.
 export function subscribeToRoom(code, { onPlayersChange, onWinnerChange, onStatus }) {
   const channel = supabase
     .channel(`mm-room-${code}`)

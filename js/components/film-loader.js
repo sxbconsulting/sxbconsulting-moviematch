@@ -1,16 +1,28 @@
-// Loader "pellicule de film" — bande à perforations qui défile.
-// Désactivé automatiquement si l'utilisateur préfère moins d'animations (voir CSS prefers-reduced-motion).
+// Loader "pellicule" — bande sombre, perforations jaunes, images qui défilent (maquette C4).
+// Immobile si l'utilisateur préfère moins d'animations (voir CSS prefers-reduced-motion).
 import { el } from "../lib/dom.js";
+import { GENRE_STYLE } from "../data/genre-style.js";
 
-export function FilmLoader({ inline = false, text = "Chargement de la séance…" } = {}) {
-  const strip = el("div", { class: "mm-loader-strip" + (inline ? " inline" : "") }, [
-    el("div", { class: "mm-loader-reel" }, [
-      el("div", { class: "mm-roll holes" }),
-      el("div", { class: "mm-roll frames" }),
-      el("div", { class: "mm-roll holes" }),
-    ]),
-    el("div", { class: "mm-loader-text" }, [text]),
+function strip(small) {
+  const g = Object.values(GENRE_STYLE).slice(0, 6).map((x) => x.grad);
+  const frames = [...g, ...g, ...g].map((bg) => el("div", { class: "mm-frame", style: { background: bg } }));
+  return el("div", { class: "mm-strip" + (small ? " small" : ""), "aria-hidden": "true" }, [
+    el("div", { class: "mm-perf" }),
+    el("div", { class: "mm-strip-win" }, [el("div", { class: "mm-reel" }, frames)]),
+    el("div", { class: "mm-perf" }),
   ]);
-  if (inline) return strip;
-  return el("div", { class: "mm-loader-overlay" }, [strip]);
+}
+
+export function FilmLoader({ inline = false, text = "Chargement de la séance…", hint = "" } = {}) {
+  if (inline) {
+    return el("div", { class: "mm-loader-inline", role: "status" }, [
+      strip(true),
+      el("div", { class: "mm-loader-txt" }, [el("span", {}, [text]), hint ? el("small", {}, [hint]) : null]),
+    ]);
+  }
+  return el("div", { class: "mm-loader-full", role: "status" }, [
+    strip(false),
+    el("div", { class: "mm-loader-big" }, [(text || "Chargement…").toUpperCase()]),
+    hint ? el("div", { class: "mm-loader-hint" }, [hint]) : null,
+  ]);
 }

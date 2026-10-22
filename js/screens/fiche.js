@@ -1,12 +1,17 @@
-// Fiche film/série — panneau coulissant depuis le bas.
-// Films/séries du catalogue TMDB : note/réalisateur/casting/synopsis via TMDB.
-// Ajouts manuels (sans tmdb_id) : recherche TMDB par titre d'abord ; si introuvable,
-// fiche générée par Claude (Edge Function claude-proxy).
+// Fiche film/série — maquette "04 Fiche film" (feuille qui monte du bas).
+// TMDB : note, réalisation/création, casting, synopsis, plateformes FR. Ajouts manuels : recherche TMDB
+// par titre ; si introuvable, fiche générée par Claude (Edge Function claude-proxy).
 import { el } from "../lib/dom.js";
 import { state, setState } from "../state.js";
-import { genreStyleOf } from "../data/genre-style.js";
+import { posterBg } from "../data/genre-style.js";
 import { getDetails, searchMulti } from "../lib/tmdb.js";
 import { ficheViaClaude } from "../lib/claude-proxy.js";
+import { Sheet } from "../components/ui.js";
+import { icon } from "../components/icons.js";
+import { FilmLoader } from "../components/film-loader.js";
+import { titleSize, titleFont } from "../lib/utils.js";
+import { isSeen, toggleSeen } from "../lib/seen.js";
+import { vote } from "./swipe.js";
 
 // Cache mémoire pour ne pas relancer un fetch à chaque re-rendu (ex : polling en arrière-plan).
 const cache = {};
@@ -16,17 +21,14 @@ function ensureLoaded(m) {
   cache[m.id] = { loading: true, data: null, err: "" };
   (async () => {
     try {
-      if (m.tmdb_id) {
-        const data = await getDetails(m.media_type, m.tmdb_id);
-        cache[m.id] = { loading: false, data, err: "" };
-      } else {
+      let data;
+      if (m.tmdb_id) data = await getDetails(m.media_type, m.tmdb_id);
+      else {
         const matches = await searchMulti(m.title).catch(() => []);
         const best = matches.find((x) => !m.year || Math.abs((x.year || 0) - m.year) <= 1) || matches[0];
-        const data = best
-          ? { ...(await getDetails(best.media_type, best.tmdb_id)), poster: best.poster }
-          : await ficheViaClaude(m.title, m.year);
-        cache[m.id] = { loading: false, data, err: "" };
+        data = best ? { ...(await getDetails(best.media_type, best.tmdb_id)), poster: best.poster } : await ficheViaClaude(m.title, m.year);
       }
+      cache[m.id] = { loading: false, data, err: "" };
     } catch {
       cache[m.id] = { loading: false, data: null, err: "Fiche indisponible pour ce titre — vérifie l'orthographe ou ta connexion." };
     }
@@ -34,65 +36,69 @@ function ensureLoaded(m) {
   })();
 }
 
+const h3 = (t) => el("h3", { class: "mm-label" }, [t]);
+
 export function renderFiche(container) {
   const m = state.ficheFor;
   if (!m) return;
   ensureLoaded(m);
   const entry = cache[m.id] || { loading: true, data: null, err: "" };
-  const gs = genreStyleOf(m.genre);
+  const d = entry.data || {};
+  const tv = m.media_type === "tv" || d.isTv;
   const close = () => setState({ ficheFor: null });
+  const title = String(m.title).toUpperCase();
+  const canVote = state.ficheFromSwipe && state.screen === "swipe" && state.deck[state.idx] && state.deck[state.idx].id === m.id;
 
-  const poster = entry.data?.poster || m.poster;
-  const annee = entry.data?.annee || m.year || "";
-  const duree = entry.data?.duree || m.dur || "";
-
-  const head = el("div", { class: "mm-fiche-head", style: { background: poster ? `linear-gradient(to bottom, #00000040, #14162aee), url(${poster}) center/cover, ${gs.grad}` : gs.grad } }, [
-    el("button", { class: "mm-fiche-close", onClick: close }, ["✕"]),
-    el("div", { style: { fontFamily: "var(--font-display)", fontSize: "34px", lineHeight: "0.95", letterSpacing: "1px", paddingRight: "34px" } }, [m.title]),
-    el("div", { style: { fontSize: "13px", color: "#ffffffcc", marginTop: "6px" } }, [
-      `${annee}${duree ? " · " + duree : ""} · ${m.genre}${m.media_type === "tv" ? " · 📺 Série" : ""}`,
+  const head = el("div", { class: "mm-fiche-head", style: { background: posterBg({ ...m, poster: d.poster || m.poster }) } }, [
+    el("div", { class: "mm-fiche-shade" }),
+    el("div", { class: "mm-handle light" }),
+    el("button", { type: "button", class: "mm-fiche-close", "aria-label": "Fermer", onClick: close }, [icon("x", 18, { stroke: 2.4 })]),
+    el("div", { class: "mm-fiche-title-wrap" }, [
+      el("div", { class: "mm-row wrap" }, [
+        el("span", { class: "mm-pill" }, [m.genre || "Perso"]),
+        tv ? el("span", { class: "mm-pill gold-bg" }, [icon("tv", 14, { stroke: 2.2 }), "Série"]) : null,
+      ]),
+      el("h2", { class: "mm-fiche-title", style: { fontSize: titleFont(title, 48) } }, [title]),
     ]),
   ]);
 
   const body = el("div", { class: "mm-fiche-body" });
-
-  if (entry.loading) {
-    body.appendChild(el("p", { class: "mm-dim", style: { fontSize: "14px" } }, ["Chargement de la fiche…"]));
-  } else if (entry.err) {
-    body.appendChild(el("p", { class: "mm-error", style: { fontSize: "14px" } }, [entry.err]));
-    body.appendChild(el("p", { style: { fontSize: "14px", lineHeight: "1.55", color: "#dddaea", marginTop: "10px" } }, [m.pitch || ""]));
+  if (entry.loading) body.appendChild(FilmLoader({ inline: true, text: "Chargement de la fiche…", hint: "Réalisation, casting, plateformes" }));
+  else if (entry.err) {
+    body.appendChild(el("p", { class: "mm-error" }, [entry.err]));
+    if (m.pitch) body.appendChild(el("p", { class: "mm-synopsis" }, [m.pitch]));
   } else {
-    const data = entry.data;
-    if (data.note) {
-      body.appendChild(el("div", { class: "mm-fiche-note" }, [
-        el("span", { style: { color: "var(--marquee)" } }, ["★"]),
-        el("span", { style: { fontFamily: "var(--font-display)", fontSize: "18px", color: "var(--marquee)", letterSpacing: "1px" } }, [data.note]),
-        el("span", { class: "mm-dim", style: { fontSize: "11px" } }, ["/ 5"]),
-      ]));
-    }
-    if (data.realisateur) {
-      body.appendChild(el("div", { style: { marginBottom: "10px" } }, [
-        el("div", { style: { fontSize: "11px", color: "var(--dim)", letterSpacing: "1px", fontWeight: "700" } }, [m.media_type === "tv" ? "CRÉATION" : "RÉALISATION"]),
-        el("div", { style: { fontSize: "15px" } }, [data.realisateur]),
-      ]));
-    }
-    if (data.casting?.length) {
-      const chips = el("div", { style: { display: "flex", flexWrap: "wrap", gap: "6px" } });
-      data.casting.forEach((a) => chips.appendChild(el("span", { style: { background: "#191b2a", border: "1px solid var(--line)", borderRadius: "99px", padding: "5px 11px", fontSize: "13px" } }, [a])));
-      body.appendChild(el("div", { style: { marginBottom: "10px" } }, [
-        el("div", { style: { fontSize: "11px", color: "var(--dim)", letterSpacing: "1px", fontWeight: "700", marginBottom: "6px" } }, ["CASTING"]),
-        chips,
-      ]));
-    }
-    if (data.synopsis) {
-      body.appendChild(el("div", {}, [
-        el("div", { style: { fontSize: "11px", color: "var(--dim)", letterSpacing: "1px", fontWeight: "700", marginBottom: "4px" } }, ["SYNOPSIS"]),
-        el("p", { style: { fontSize: "14px", lineHeight: "1.55", color: "#dddaea", margin: 0 } }, [data.synopsis]),
+    const note = parseFloat(String(d.note || "").replace(",", "."));
+    const stars = note ? Math.round(note) : 0;
+    body.appendChild(el("div", { class: "mm-row-center left" }, [
+      note ? el("span", { class: "mm-note-big" }, [String(d.note).replace(".", ","), el("small", {}, [" / 5"])]) : null,
+      note ? el("span", { class: "mm-stars", role: "img", "aria-label": `${d.note} étoiles sur 5` }, ["★".repeat(stars), el("span", { class: "off" }, ["★".repeat(Math.max(0, 5 - stars))])]) : null,
+      el("span", { class: "mm-note push-right" }, [[d.annee || m.year, d.duree || m.dur].filter(Boolean).join(" · ")]),
+    ]));
+    if (d.realisateur) body.appendChild(el("div", { class: "mm-info-card" }, [el("span", { class: "mm-note" }, [tv ? "Création" : "Réalisation"]), el("span", { class: "strong" }, [d.realisateur])]));
+    if (d.casting?.length) body.appendChild(el("div", { class: "mm-field" }, [h3("Casting"), el("div", { class: "mm-chips" }, d.casting.slice(0, 6).map((a) => el("span", { class: "mm-cast" }, [a])))]));
+    if (d.synopsis) body.appendChild(el("div", { class: "mm-field" }, [h3("Synopsis"), el("p", { class: "mm-synopsis" }, [d.synopsis])]));
+    const plats = d.plateformes?.length ? d.plateformes : m.on || [];
+    if (m.tmdb_id || plats.length) {
+      body.appendChild(el("div", { class: "mm-field" }, [
+        h3("Où le voir en France"),
+        plats.length ? el("div", { class: "mm-chips" }, plats.map((p) => el("span", { class: "mm-plat" }, [p]))) : el("span", { class: "mm-note" }, ["Pas inclus dans les abonnements suivis (Netflix, Prime Video, Disney+, Canal+, Max, Apple TV+, Paramount+)."]),
       ]));
     }
   }
 
-  const sheet = el("div", { class: "mm-fiche-sheet", onClick: (e) => e.stopPropagation() }, [head, body]);
-  const overlay = el("div", { class: "mm-fiche-overlay", onClick: close }, [sheet]);
-  container.appendChild(overlay);
+  const seen = isSeen(m);
+  body.appendChild(el("button", {
+    type: "button", class: "mm-btn dark md" + (seen ? " gold-line" : ""), "aria-pressed": String(seen),
+    onClick: () => { toggleSeen(m); setState({}); },
+  }, [icon("eye", 18), seen ? "Déjà vu — exclu des prochains tirages" : "Je l'ai déjà vu"]));
+
+  if (canVote) {
+    body.appendChild(el("div", { class: "mm-row" }, [
+      el("button", { type: "button", class: "mm-btn danger strong", onClick: () => { setState({ ficheFor: null }); vote(false); } }, [icon("x", 18, { stroke: 2.5 }), "Passe"]),
+      el("button", { type: "button", class: "mm-btn green", onClick: () => { setState({ ficheFor: null }); vote(true); } }, [icon("flame", 18, { stroke: 2.2 }), "Chaud"]),
+    ]));
+  }
+
+  container.appendChild(Sheet({ label: `Fiche ${m.title}`, onClose: close, cls: "fiche", children: [head, body] }));
 }

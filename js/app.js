@@ -1,9 +1,10 @@
-// Point d'entrée + routeur — remplace le composant App/Header de React.
-// Rendu simple : à chaque setState(), on vide #app et on reconstruit l'écran courant.
-// (Le focus des champs texte est restauré après coup pour ne pas perdre la frappe.)
-import { state, onStateChange } from "./state.js";
+// Point d'entrée + routeur. Rendu simple : à chaque setState(), on vide #app et on reconstruit l'écran
+// courant (le focus et la position du curseur des champs marqués data-key sont restaurés après coup).
+import { state, setState, onStateChange } from "./state.js";
 import { el, clear } from "./lib/dom.js";
 import { FilmLoader } from "./components/film-loader.js";
+import { InviteSheet } from "./components/invite.js";
+import { icon } from "./components/icons.js";
 import { renderHome } from "./screens/home.js";
 import { renderSetup } from "./screens/setup.js";
 import { renderSwipe } from "./screens/swipe.js";
@@ -13,38 +14,23 @@ import { renderRoulette } from "./screens/roulette.js";
 import { renderLists } from "./screens/lists.js";
 import { renderListBuilder } from "./screens/list-builder.js";
 import { renderFiche } from "./screens/fiche.js";
-import { cleanName } from "./lib/utils.js";
+import { cleanName, cleanCode, isValidCode } from "./lib/utils.js";
 import { listPlayers, getWinner, subscribeToRoom } from "./lib/backend.js";
-import { setState } from "./state.js";
+import { joinSession } from "./actions.js";
+import { getPrefs } from "./lib/prefs.js";
 
 const appEl = document.getElementById("app");
 
-function renderHeader(container) {
-  const logo = el("div", { class: "mm-logo" }, ["MOVIE", el("span", {}, ["MATCH"])]);
-  const header = el("header", { class: "mm-header" }, [logo]);
-  if (state.code) {
-    const right = el("div", { class: "mm-header-right" }, [
-      el("span", { class: "mm-header-count" }, [`${state.players.length} 🍿`]),
-    ]);
-    if (state.screen === "swipe") {
-      right.appendChild(el("button", { class: "mm-btn mm-btn-ghost", onClick: () => setState({ screen: "results" }) }, ["Résultats live"]));
-    }
-    header.appendChild(right);
-  }
-  container.appendChild(header);
-}
-
 function renderOfflineBanner(container) {
-  if (state.local && state.screen !== "home") {
-    container.appendChild(el("div", { class: "mm-offline-banner" }, [
-      "⚡ Mode hors-ligne : la synchro entre téléphones n'est pas dispo ici. Tes votes restent sur cet appareil.",
+  if (state.local && (state.screen === "swipe" || state.screen === "results")) {
+    container.appendChild(el("div", { class: "mm-offline", role: "status" }, [
+      icon("wifiOff", 18), "Mode hors-ligne : la synchro n'est pas dispo, tes votes restent sur ce téléphone.",
     ]));
   }
 }
 
 function renderScreen(container) {
   switch (state.screen) {
-    case "home": renderHome(container); break;
     case "setup": renderSetup(container); break;
     case "swipe": renderSwipe(container); break;
     case "results": renderResults(container); break;
@@ -56,22 +42,19 @@ function renderScreen(container) {
   }
 }
 
-// Synchronisation d'une salle : Supabase Realtime en priorité, polling (3,5s) en filet de
-// secours si la connexion temps réel échoue ou met plus de 3s à s'établir.
-let pollTimer = null;
-let realtimeUnsub = null;
-let activeKey = null; // code de la salle actuellement synchronisée (ou null)
+// Synchronisation d'une salle : Supabase Realtime en priorité, polling (3,5s) en filet de secours.
+let pollTimer = null, realtimeUnsub = null, activeKey = null;
 
 async function doPoll() {
   if (!state.code) return;
   if (state.local) {
     const done = state.deck.length > 0 && state.deck.every((m) => m.id in state.votes);
-    setState({ players: [{ name: cleanName(state.name) || "Toi", votes: state.votes, done }] });
+    setState({ players: [{ name: cleanName(state.name) || "Toi", votes: state.votes, seen: state.seenIds, done }] });
     return;
   }
   const players = await listPlayers(state.code);
   const winner = await getWinner(state.code);
-  setState({ players, winner: winner || state.winner });
+  setState({ players: players || state.players, winner: winner || state.winner });
 }
 
 function stopSync() {
@@ -80,54 +63,34 @@ function stopSync() {
   activeKey = null;
 }
 
-function isRoomScreen() { return state.screen === "swipe" || state.screen === "results"; }
-
 function ensureRoomSync() {
-  const onRoomScreen = isRoomScreen() && !!state.code;
-  if (!onRoomScreen) { stopSync(); return; }
-
-  // Hors-ligne : pas d'abonnement réseau, juste un instantané local à recalculer à chaque
-  // passage sur l'écran (le code de salle "SOLO" ne change pas entre swipe et résultats,
-  // donc le déduplicateur par code ci-dessous ne doit pas s'appliquer ici).
-  if (state.local) { doPoll(); return; }
-
-  const key = state.code;
-  if (key === activeKey) return;
+  const onRoom = (state.screen === "swipe" || state.screen === "results") && !!state.code;
+  if (!onRoom) { stopSync(); return; }
+  if (state.local) { if (state.screen === "results" && activeKey !== "local") { activeKey = "local"; doPoll(); } return; }
+  if (state.code === activeKey) return;
 
   stopSync();
-  activeKey = key;
-  doPoll(); // premier chargement immédiat
-
+  activeKey = state.code;
+  doPoll();
   let subscribed = false;
   const fallbackTimer = setTimeout(() => { if (!subscribed) pollTimer = setInterval(doPoll, 3500); }, 3000);
   realtimeUnsub = subscribeToRoom(state.code, {
     onPlayersChange: doPoll,
     onWinnerChange: (winner) => { if (winner) setState({ winner }); },
     onStatus: (status) => {
-      if (status === "SUBSCRIBED") {
-        subscribed = true; clearTimeout(fallbackTimer);
-        clearInterval(pollTimer); pollTimer = null;
-      } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
-        if (!pollTimer) pollTimer = setInterval(doPoll, 3500);
-      }
+      if (status === "SUBSCRIBED") { subscribed = true; clearTimeout(fallbackTimer); clearInterval(pollTimer); pollTimer = null; }
+      else if (["CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].includes(status) && !pollTimer) pollTimer = setInterval(doPoll, 3500);
     },
   });
 }
 
-// Sur l'écran swipe, la carte affichée ne dépend ni de `players` ni de `winner` — seul le
-// compteur du header en a besoin. Sans ce garde-fou, chaque mise à jour Realtime/polling en
-// arrière-plan reconstruirait la carte (et rechargerait son affiche) pour rien.
+// Sur l'écran swipe, la carte ne dépend pas de `players`/`winner` : on évite de la reconstruire
+// (et de recharger l'affiche) à chaque mise à jour Realtime en arrière-plan.
 let lastSwipeKey = null;
 
 function render() {
-  // Une fiche ouverte doit toujours pouvoir se re-rendre (elle charge ses données de façon
-  // asynchrone), donc on ne saute jamais le rendu complet tant qu'elle est affichée.
-  const swipeKey = state.screen === "swipe" ? `${state.code}:${state.idx}:${state.deck.length}` : null;
-  const canSkipBody = state.screen === "swipe" && !state.ficheFor && swipeKey === lastSwipeKey && appEl.querySelector(".mm-swipe-stage");
-
-  if (canSkipBody) {
-    const countEl = appEl.querySelector(".mm-header-count");
-    if (countEl) countEl.textContent = `${state.players.length} 🍿`;
+  const swipeKey = state.screen === "swipe" ? `${state.code}:${state.idx}:${state.deck.length}:${state.busy}:${state.invite}:${state.toast}` : null;
+  if (state.screen === "swipe" && !state.ficheFor && swipeKey === lastSwipeKey && appEl.querySelector(".mm-swipe-stage")) {
     ensureRoomSync();
     return;
   }
@@ -141,24 +104,40 @@ function render() {
   }
 
   clear(appEl);
-  if (state.busy) appEl.appendChild(FilmLoader());
-  renderHeader(appEl);
+  if (state.busy) appEl.appendChild(FilmLoader({ text: state.busyText || "Chargement…" }));
   renderOfflineBanner(appEl);
   renderScreen(appEl);
   if (state.ficheFor) renderFiche(appEl);
+  if (state.invite && state.code && !state.local) appEl.appendChild(InviteSheet());
+  if (state.toast) appEl.appendChild(el("div", { class: "mm-toast", role: "status" }, [state.toast]));
 
   if (focusKey) {
     const target = appEl.querySelector(`[data-key="${CSS.escape(focusKey)}"]`);
     if (target) {
       target.focus();
-      if (selStart !== null && typeof target.setSelectionRange === "function") {
-        try { target.setSelectionRange(selStart, selEnd); } catch {}
-      }
+      if (selStart !== null && typeof target.setSelectionRange === "function") { try { target.setSelectionRange(selStart, selEnd); } catch {} }
     }
   }
-
   ensureRoomSync();
 }
 
+// Échap ferme la fiche ou la feuille d'invitation
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (state.ficheFor) setState({ ficheFor: null });
+  else if (state.invite) setState({ invite: false });
+});
+
 onStateChange(render);
 render();
+
+// Lien d'invitation : ?salle=CODE → code pré-rempli, et on rejoint direct si le prénom est déjà connu.
+try {
+  const c = cleanCode(new URLSearchParams(window.location.search).get("salle"));
+  if (isValidCode(c)) {
+    history.replaceState(null, "", window.location.pathname); // évite de re-rejoindre à chaque rechargement
+    setState({ joinCode: c });
+    const n = getPrefs().name;
+    if (cleanName(n || "")) joinSession(c, n);
+  }
+} catch {}
